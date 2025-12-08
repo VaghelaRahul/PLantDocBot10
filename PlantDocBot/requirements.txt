@@ -1,9 +1,19 @@
-streamlit
-pandas
-numpy
-pillow
-joblib
-scikit-learn
-tensorflow
-gdown
-tf-keras==2.15.0
+streamlit==1.41.1
+
+# Image + numeric
+numpy==1.26.4
+pandas==2.2.3
+pillow==10.4.0
+scikit-learn==1.5.2
+
+# TensorFlow only for CNN (HF supports 2.20)
+tensorflow==2.20.0
+tf-keras==2.20.0
+
+# Hugging Face (PyTorch)
+torch==2.4.1
+transformers==4.46.2
+sentence-transformers==3.3.1
+
+# others
+gdown==5.2.0
