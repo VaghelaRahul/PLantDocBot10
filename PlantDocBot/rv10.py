@@ -14,6 +14,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 
 import gdown
+import tf_keras  # <-- add this
+
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -103,11 +105,13 @@ def normalize_disease(d: str) -> str:
 @st.cache_resource
 def load_image_model():
     image_model_path = ensure_image_model_path()
-    return tf.keras.models.load_model(
+    # Use legacy tf_keras (2.15) to load the model saved in your local environment
+    model = tf_keras.models.load_model(
         image_model_path,
         compile=False,
-        safe_mode=False,
     )
+    return model
+
 
 @st.cache_resource
 def load_image_label_encoder():
