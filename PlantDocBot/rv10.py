@@ -1,4 +1,4 @@
-# rv10.py — Cloud-friendly PlantDocBot (no sentence-transformers)
+# rv10.py  — PlantDocBot (Cloud-friendly version, no HF Transformers)
 
 import os
 from pathlib import Path
@@ -9,9 +9,11 @@ import pandas as pd
 from PIL import Image
 import joblib
 import tensorflow as tf
-from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
 
-import gdown  # for Google Drive downloads
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
+
+import gdown
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -21,31 +23,28 @@ st.title("🌿 Plant Health Assistant")
 st.write("AI-powered plant disease prediction using **Image + Text** with treatment recommendations.")
 
 # ---------------------------------------------------------
-# PATHS (LOCAL INSIDE REPO / APP) + GOOGLE DRIVE IDS
+# PATHS (LOCAL) + GOOGLE DRIVE IDS
 # ---------------------------------------------------------
 APP_DIR = Path(__file__).parent.resolve()
 
-# Small files committed to GitHub (live in PlantDocBot/)
+# small files (committed to GitHub)
 SMALL_BASE = APP_DIR
 
-LABEL_ENCODER_FILE = SMALL_BASE / "label_encoder_merged.joblib"
+LABEL_ENCODER_FILE = SMALL_BASE / "label_encoder_merged.joblib"   # optional, not critical now
 IMAGE_LABEL_ENCODER_FILE = SMALL_BASE / "image_label_encoder.joblib"
 DISEASE_TO_MERGED_CSV = SMALL_BASE / "disease_to_merged.csv"
-DISPLAY_MAP_FILE = SMALL_BASE / "display_name_by_merged.csv"  # from inspect_csv.py (optional but good)
+DISPLAY_MAP_FILE = SMALL_BASE / "display_name_by_merged.csv"      # optional pretty names
 
-# Big files downloaded from Google Drive into /models (not in GitHub)
+# big files we download into /models (not in GitHub)
 MODELS_BASE = APP_DIR / "models"
 MODELS_BASE.mkdir(exist_ok=True)
 
-TEXT_MODEL_DIR = MODELS_BASE / "Final_Text_Disease_Model"
 IMAGE_MODEL_FILE = MODELS_BASE / "plant_disease_model_fixed.keras"
 REMEDY_CSV_PATH = MODELS_BASE / "plant_disease_dataset_clean_lemmatized03.csv"
 
-# ---- Google Drive IDs from your links ----
+# ---- your Google Drive IDs (from the links you sent) ----
 GDRIVE_IMAGE_ID = "1oFVBpl-Q81kryI6h-TC94Wt7rcMd8AXn"
-GDRIVE_TEXT_FOLDER_ID = "1L_yTMpvW5xFSKUFHQN-_mz5t2K9fjxnG"
 GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
-
 
 # ---------------------------------------------------------
 # HELPERS TO DOWNLOAD FROM GOOGLE DRIVE (RUN ONCE)
@@ -53,7 +52,7 @@ GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
 @st.cache_resource
 def ensure_image_model_path() -> str:
     """Download plant_disease_model_fixed.keras from Drive if missing."""
-    if not IMAGE_MODEL_FILE.exists() or IMAGE_MODEL_FILE.stat().st_size == 0:
+    if (not IMAGE_MODEL_FILE.exists()) or IMAGE_MODEL_FILE.stat().st_size == 0:
         st.write("📥 Downloading image CNN model from Google Drive...")
         gdown.download(
             id=GDRIVE_IMAGE_ID,
@@ -64,25 +63,9 @@ def ensure_image_model_path() -> str:
 
 
 @st.cache_resource
-def ensure_text_model_dir() -> str:
-    """Download Final_Text_Disease_Model folder from Drive if missing."""
-    config_path = TEXT_MODEL_DIR / "config.json"
-    if not config_path.exists():
-        st.write("📥 Downloading text BERT model folder from Google Drive...")
-        TEXT_MODEL_DIR.mkdir(exist_ok=True)
-        gdown.download_folder(
-            id=GDRIVE_TEXT_FOLDER_ID,
-            output=str(TEXT_MODEL_DIR),
-            quiet=False,
-            use_cookies=False,
-        )
-    return str(TEXT_MODEL_DIR)
-
-
-@st.cache_resource
 def ensure_remedy_csv_path() -> str:
     """Download plant_disease_dataset_clean_lemmatized03.csv from Drive if missing."""
-    if not REMEDY_CSV_PATH.exists() or REMEDY_CSV_PATH.stat().st_size == 0:
+    if (not REMEDY_CSV_PATH.exists()) or REMEDY_CSV_PATH.stat().st_size == 0:
         st.write("📥 Downloading remedy CSV from Google Drive...")
         gdown.download(
             id=GDRIVE_CSV_ID,
@@ -90,7 +73,6 @@ def ensure_remedy_csv_path() -> str:
             quiet=False,
         )
     return str(REMEDY_CSV_PATH)
-
 
 # ---------------------------------------------------------
 # COARSE NORMALIZATION (group-level, for fallback/remedies)
@@ -115,19 +97,9 @@ def normalize_disease(d: str) -> str:
         return "curl"
     return "other"
 
-
 # ---------------------------------------------------------
-# LOAD MODELS
+# LOAD IMAGE MODEL
 # ---------------------------------------------------------
-@st.cache_resource
-def load_nlp_model():
-    text_model_path = ensure_text_model_dir()
-    tokenizer = AutoTokenizer.from_pretrained(text_model_path)
-    model = TFAutoModelForSequenceClassification.from_pretrained(text_model_path)
-    label_encoder = joblib.load(LABEL_ENCODER_FILE)
-    return tokenizer, model, label_encoder
-
-
 @st.cache_resource
 def load_image_model():
     image_model_path = ensure_image_model_path()
@@ -137,19 +109,17 @@ def load_image_model():
         safe_mode=False,
     )
 
-
 @st.cache_resource
 def load_image_label_encoder():
     enc = joblib.load(IMAGE_LABEL_ENCODER_FILE)
     if isinstance(enc, dict):
-        # dict: class_name -> idx  => want idx -> class_name
+        # dict: class_name -> idx  => we want idx -> class_name
         return {v: k for k, v in enc.items()}
     # sklearn LabelEncoder
     return {i: cls for i, cls in enumerate(enc.classes_)}
 
-
 # ---------------------------------------------------------
-# REMEDY MAPS (coarse + exact merged_label)
+# REMEDY MAPS (coarse + exact merged_label) FROM CSV
 # ---------------------------------------------------------
 @st.cache_resource
 def load_remedy_maps():
@@ -215,8 +185,7 @@ def load_remedy_maps():
     remedy_by_norm.setdefault("healthy", "No treatment needed.")
     remedy_by_norm.setdefault("other", "No remedy available.")
 
-    return remedy_by_merged, remedy_by_norm
-
+    return df, remedy_by_merged, remedy_by_norm
 
 # ---------------------------------------------------------
 # OPTIONAL DISPLAY MAP (merged_label -> pretty name)
@@ -236,16 +205,37 @@ def load_display_map():
             return {}
     return {}
 
+# ---------------------------------------------------------
+# TEXT INDEX: TF-IDF OVER YOUR SYMPTOMS (NO BERT)
+# ---------------------------------------------------------
+@st.cache_resource
+def load_text_index():
+    """
+    Build a TF-IDF index over the Symptoms / clean_text column of your CSV.
+    Used for professional text-based prediction (no Transformers).
+    """
+    df, remedy_by_merged, remedy_by_norm = load_remedy_maps()
+
+    # Choose which text column to index
+    if "clean_text" in df.columns:
+        texts = df["clean_text"].fillna("").astype(str).tolist()
+    elif "Symptoms" in df.columns:
+        texts = df["Symptoms"].fillna("").astype(str).tolist()
+    else:
+        # fallback: use Disease name itself
+        texts = df["Disease"].fillna("").astype(str).tolist()
+
+    vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 2))
+    X = vectorizer.fit_transform(texts)
+
+    return vectorizer, X, df, remedy_by_merged, remedy_by_norm
 
 # ---------------------------------------------------------
 # LOAD ALL RESOURCES
 # ---------------------------------------------------------
-tokenizer, nlp_model, label_encoder = load_nlp_model()
 cnn_model = load_image_model()
 img_idx_to_class = load_image_label_encoder()
-remedy_by_merged, remedy_by_norm = load_remedy_maps()
 display_name_by_merged = load_display_map()
-
 
 # ---------------------------------------------------------
 # SMALL HELPERS
@@ -259,47 +249,56 @@ def split_plant_and_disease(class_name):
     disease = " ".join(parts[1:]).replace("_", " ").title() if len(parts) > 1 else "Unknown"
     return plant, disease
 
-
 # ---------------------------------------------------------
-# PREDICT TEXT  (BERT -> merged_label -> pretty name + remedy)
+# PREDICT TEXT (TF-IDF SIMILARITY)
 # ---------------------------------------------------------
 def predict_text(symptoms: str):
-    # BERT classification -> merged_label
-    enc = tokenizer(
-        symptoms,
-        truncation=True,
-        padding=True,
-        max_length=256,
-        return_tensors="tf",
-    )
-    outputs = nlp_model(enc)
-    pred = int(tf.argmax(outputs.logits, axis=1).numpy()[0])
-    merged_raw = label_encoder.inverse_transform([pred])[0]
-    merged_key = str(merged_raw).lower().strip()
+    vectorizer, X, df, remedy_by_merged, remedy_by_norm = load_text_index()
 
-    # Pretty display name
+    # Convert user text to vector
+    x_q = vectorizer.transform([symptoms])
+
+    # cosine similarity via linear kernel (TF-IDF is L2-normalized)
+    sims = linear_kernel(x_q, X)[0]
+    best_idx = int(np.argmax(sims))
+    best_sim = float(sims[best_idx])
+
+    row = df.iloc[best_idx]
+
+    disease_name = str(row.get("Disease", "Unknown disease"))
+    merged_label = str(row.get("merged_label", "")).strip().lower()
+    if not merged_label:
+        merged_label = normalize_disease(disease_name)
+
+    # Pretty display: try display_name_by_merged, else use Disease text
     display_name = display_name_by_merged.get(
-        merged_key, merged_key.replace("_", " ").title()
+        merged_label,
+        disease_name,
     )
 
-    # Remedy: exact merged_label, else normalized group
-    remedy = (
-        remedy_by_merged.get(merged_key)
-        or remedy_by_norm.get(normalize_disease(merged_key), "No remedy available.")
-    )
+    remedy = str(row.get("Remedy", "")).strip()
+    if not remedy:
+        # fallback to merged_label or normalized group
+        remedy = (
+            remedy_by_merged.get(merged_label)
+            or remedy_by_norm.get(normalize_disease(merged_label), "No remedy available.")
+        )
 
-    confidence = float(tf.nn.softmax(outputs.logits)[0][pred])
+    # "confidence" here is similarity score, not probability.
+    # We scale it roughly to 0–100 for UI.
+    confidence = max(0.0, min(1.0, best_sim))  # clamp to [0,1]
 
     return {
         "display_name": display_name,
-        "merged_key": merged_key,
+        "disease_name": disease_name,
+        "merged_label": merged_label,
+        "similarity": best_sim,
         "confidence": confidence,
         "remedy": remedy,
     }
 
-
 # ---------------------------------------------------------
-# PREDICT IMAGE  (CNN -> PlantVillage class -> merged-style -> pretty + remedy)
+# PREDICT IMAGE (CNN)
 # ---------------------------------------------------------
 def predict_image(image_file):
     img = Image.open(image_file).convert("RGB").resize((224, 224))
@@ -313,13 +312,12 @@ def predict_image(image_file):
     class_name = img_idx_to_class.get(idx, str(idx))
     plant, disease_full = split_plant_and_disease(class_name)
 
-    # Try to turn "Leaf Mold" -> "leaf_mold" for merged_label style
+    # Map to merged_label via normalization on disease_full
     merged_candidate = disease_full.lower().strip().replace(" ", "_")
 
-    # Pretty name from display map, else the raw disease name
-    display_name = display_name_by_merged.get(merged_candidate, disease_full)
+    # Get remedy maps (cached)
+    _, remedy_by_merged, remedy_by_norm = load_remedy_maps()
 
-    # Remedy from merged_candidate or normalized group
     remedy = (
         remedy_by_merged.get(merged_candidate)
         or remedy_by_norm.get(normalize_disease(merged_candidate), "No remedy available.")
@@ -327,13 +325,13 @@ def predict_image(image_file):
 
     return {
         "plant": plant,
-        "disease_display": display_name,
+        "disease_display": disease_full,
         "disease_full": disease_full,
-        "merged_label": merged_candidate,
+        "internal_key": merged_candidate,
+        "merged_label": normalize_disease(merged_candidate),
         "confidence": confidence,
         "remedy": remedy,
     }
-
 
 # ---------------------------------------------------------
 # UI
@@ -346,7 +344,7 @@ if uploaded_img:
 
     st.subheader(f"🌿 Detected Disease: **{res_img['plant']} – {res_img['disease_display']}**")
     st.write(f"Model class: `{res_img['disease_full']}`")
-    st.write(f"Internal merged_label candidate: `{res_img['merged_label']}`")
+    st.write(f"Internal key: `{res_img['internal_key']}`  | merged group: `{res_img['merged_label']}`")
     st.write(f"Confidence: **{res_img['confidence']*100:.2f}%**")
     st.subheader("🧪 Recommended Treatment:")
     st.write(res_img["remedy"])
@@ -359,8 +357,10 @@ if st.button("Analyze Text"):
         res_txt = predict_text(text_input)
 
         st.subheader(f"🌿 Detected Disease: **{res_txt['display_name']}**")
-        st.write(f"Internal merged_label: `{res_txt['merged_key']}`")
-        st.write(f"Confidence (model softmax): **{res_txt['confidence']*100:.2f}%**")
+        st.write(f"Matched disease in dataset: `{res_txt['disease_name']}`")
+        st.write(f"Merged group: `{res_txt['merged_label']}`")
+        st.write(f"Similarity score (TF-IDF): **{res_txt['similarity']:.3f}**")
+        st.write(f"Confidence (scaled): **{res_txt['confidence']*100:.2f}%**")
 
         st.subheader("🧪 Recommended Treatment:")
         st.write(res_txt["remedy"])
