@@ -1,12 +1,15 @@
 streamlit
-tensorflow==2.15.0
-tf-keras==2.15.0
-numpy<2.0
-pandas
-Pillow
-joblib
-scikit-learn==1.2.2
-transformers
+
+tensorflow        # let Streamlit Cloud pick the latest compatible TF (currently 2.20.x)
+
+transformers      # for TFAutoModelForSequenceClassification / AutoTokenizer
 sentence-transformers
-torch
-gdown
+torch             # dependency for sentence-transformers
+
+pandas
+numpy
+pillow
+scikit-learn
+joblib
+
+gdown             # to download your models & CSV from Google Drive
