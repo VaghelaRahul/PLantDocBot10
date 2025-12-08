@@ -1,10 +1,7 @@
 streamlit
 
-tensorflow        # let Streamlit Cloud pick the latest compatible TF (currently 2.20.x)
-
-transformers      # for TFAutoModelForSequenceClassification / AutoTokenizer
-sentence-transformers
-torch             # dependency for sentence-transformers
+tensorflow        # let Streamlit Cloud choose a compatible version
+transformers      # for TFAutoModelForSequenceClassification & AutoTokenizer
 
 pandas
 numpy
@@ -12,4 +9,4 @@ pillow
 scikit-learn
 joblib
 
-gdown             # to download your models & CSV from Google Drive
+gdown             # to download your big models from Google Drive
