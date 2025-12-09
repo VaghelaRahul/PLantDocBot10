@@ -66,7 +66,7 @@ TEXT_MODEL_DIR = MODELS_BASE / "Final_Text_Disease_Model"
 IMAGE_MODEL_FILE = MODELS_BASE / "plant_disease_model_cloud.h5"
 REMEDY_CSV_PATH = MODELS_BASE / "plant_disease_dataset_clean_lemmatized03.csv"
 
-# ✅ YOUR FINAL CLOUD MODEL IDS
+# ✅ FINAL CLOUD MODEL IDS
 GDRIVE_IMAGE_ID = "12aRYV9_laCwvonv20mJneshu5fBedZZL"
 GDRIVE_TEXT_FOLDER_ID = "1L_yTMpvW5xFSKUFHQN-_mz5t2K9fjxnG"
 GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
@@ -77,14 +77,14 @@ GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
 @st.cache_resource
 def ensure_image_model_path():
     if not IMAGE_MODEL_FILE.exists():
-        with st.spinner("Downloading system files..."):
+        with st.spinner("Preparing image analysis system..."):
             gdown.download(id=GDRIVE_IMAGE_ID, output=str(IMAGE_MODEL_FILE), quiet=False)
     return str(IMAGE_MODEL_FILE)
 
 @st.cache_resource
 def ensure_text_model_dir():
     if not (TEXT_MODEL_DIR / "config.json").exists():
-        with st.spinner("Downloading system files..."):
+        with st.spinner("Preparing text analysis system..."):
             TEXT_MODEL_DIR.mkdir(exist_ok=True)
             gdown.download_folder(
                 id=GDRIVE_TEXT_FOLDER_ID,
@@ -97,7 +97,7 @@ def ensure_text_model_dir():
 @st.cache_resource
 def ensure_remedy_csv_path():
     if not REMEDY_CSV_PATH.exists():
-        with st.spinner("Downloading system files..."):
+        with st.spinner("Loading treatment knowledge base..."):
             gdown.download(id=GDRIVE_CSV_ID, output=str(REMEDY_CSV_PATH), quiet=False)
     return str(REMEDY_CSV_PATH)
 
@@ -106,14 +106,22 @@ def ensure_remedy_csv_path():
 # ---------------------------------------------------------
 def normalize_disease(d):
     d = str(d).lower()
-    if "healthy" in d: return "healthy"
-    if "bacterial" in d or "spot" in d: return "bacterial"
-    if "blight" in d: return "blight"
-    if "mildew" in d or "mold" in d: return "mildew"
-    if "virus" in d or "mosaic" in d: return "viral"
-    if "rot" in d or "canker" in d: return "rot_mold"
-    if "scab" in d: return "scab"
-    if "curl" in d: return "curl"
+    if "healthy" in d:
+        return "healthy"
+    if "bacterial" in d or "spot" in d:
+        return "bacterial"
+    if "blight" in d:
+        return "blight"
+    if "mildew" in d or "mold" in d:
+        return "mildew"
+    if "virus" in d or "mosaic" in d:
+        return "viral"
+    if "rot" in d or "canker" in d:
+        return "rot_mold"
+    if "scab" in d:
+        return "scab"
+    if "curl" in d:
+        return "curl"
     return "other"
 
 # ---------------------------------------------------------
@@ -135,19 +143,62 @@ def load_image_model():
 @st.cache_resource
 def load_image_label_encoder():
     enc = joblib.load(IMAGE_LABEL_ENCODER_FILE)
+    # handle both dict and sklearn LabelEncoder
+    if isinstance(enc, dict):
+        # dict is usually {class_name: idx} → invert to {idx: class_name}
+        return {v: k for k, v in enc.items()}
+    # sklearn LabelEncoder: use enc.classes_
     return {i: cls for i, cls in enumerate(enc.classes_)}
 
 @st.cache_resource
 def load_remedy_map():
     ensure_remedy_csv_path()
     df = pd.read_csv(REMEDY_CSV_PATH)
-    df["merged_norm"] = df["merged_label"].astype(str).apply(normalize_disease)
+
+    # Make sure merged_label exists (fallback to Disease if needed)
+    if "merged_label" not in df.columns:
+        if DISEASE_TO_MERGED_CSV.exists():
+            mapdf = pd.read_csv(DISEASE_TO_MERGED_CSV)
+            disease_to_merged = dict(
+                zip(
+                    mapdf["Disease"].astype(str).str.lower(),
+                    mapdf["merged_label"].astype(str).str.lower(),
+                )
+            )
+            df["merged_label"] = (
+                df.get("Disease", "")
+                .astype(str)
+                .str.lower()
+                .map(disease_to_merged)
+            )
+            df["merged_label"] = df["merged_label"].fillna(
+                df.get("Disease", "").astype(str).str.lower()
+            )
+        else:
+            if "Disease" in df.columns:
+                df["merged_label"] = df["Disease"].astype(str).str.lower()
+            else:
+                df["merged_label"] = "other"
+
+    df["merged_label"] = (
+        df["merged_label"].astype(str).str.strip().replace("", "other").fillna("other").str.lower()
+    )
+
+    if "Remedy" not in df.columns:
+        df["Remedy"] = pd.NA
+
+    df["merged_norm"] = df["merged_label"].apply(normalize_disease)
+
+    def top_rem(series):
+        s = series.dropna().astype(str).str.strip()
+        return s.value_counts().index[0] if len(s) else None
 
     remedy_map = (
         df.groupby("merged_norm")["Remedy"]
-        .agg(lambda x: x.dropna().value_counts().index[0] if len(x.dropna()) else "No remedy available.")
+        .agg(lambda x: top_rem(x) or "No remedy available.")
         .to_dict()
     )
+
     remedy_map.setdefault("healthy", "No treatment needed.")
     remedy_map.setdefault("other", "No remedy available.")
     return remedy_map
@@ -165,9 +216,9 @@ with st.spinner("Initializing system..."):
 # UTILS
 # ---------------------------------------------------------
 def split_plant_and_disease(class_name):
-    parts = str(class_name).replace("___","_").split("_")
-    plant = parts[0].title()
-    disease = " ".join(parts[1:]).replace("_"," ").title()
+    parts = str(class_name).replace("___", "_").split("_")
+    plant = parts[0].title() if parts else "Unknown"
+    disease = " ".join(parts[1:]).replace("_", " ").title() if len(parts) > 1 else "Unknown"
     return plant, disease
 
 # ---------------------------------------------------------
@@ -185,12 +236,12 @@ def predict_text(symptoms):
 
 def predict_image(uploaded_file):
     img = Image.open(uploaded_file).convert("RGB").resize((224, 224))
-    arr = np.array(img)/255.0
+    arr = np.array(img) / 255.0
     arr = np.expand_dims(arr, 0)
     preds = cnn_model.predict(arr)
     idx = int(np.argmax(preds))
     confidence = float(np.max(preds))
-    class_name = img_idx_to_class[idx]
+    class_name = img_idx_to_class.get(idx, str(idx))
     plant, disease = split_plant_and_disease(class_name)
     key = normalize_disease(disease)
     remedy = treatment_map.get(key, "No remedy available.")
@@ -201,8 +252,10 @@ def predict_image(uploaded_file):
 # ---------------------------------------------------------
 if "image" not in st.session_state:
     st.session_state.image = None
-if "result" not in st.session_state:
-    st.session_state.result = None
+if "result_image" not in st.session_state:
+    st.session_state.result_image = None
+if "result_text" not in st.session_state:
+    st.session_state.result_text = None
 
 # ---------------------------------------------------------
 # TABS
@@ -211,10 +264,10 @@ tab1, tab2 = st.tabs(["📸 Image Analysis", "📝 Symptom Analysis"])
 
 # ------------------ IMAGE TAB ------------------
 with tab1:
-    col1, col2 = st.columns([1,1])
+    col1, col2 = st.columns([1, 1])
 
     with col1:
-        img_file = st.file_uploader("Upload plant leaf image", type=["jpg","jpeg","png"])
+        img_file = st.file_uploader("Upload plant leaf image", type=["jpg", "jpeg", "png"])
         if img_file:
             st.session_state.image = img_file
             st.image(img_file, use_column_width=True)
@@ -223,7 +276,7 @@ with tab1:
             if st.session_state.image:
                 with st.spinner("Analyzing image..."):
                     plant, disease, conf, remedy = predict_image(st.session_state.image)
-                    st.session_state.result = (plant, disease, conf, remedy)
+                    st.session_state.result_image = (plant, disease, conf, remedy)
             else:
                 st.warning("Please upload an image first.")
 
@@ -231,46 +284,63 @@ with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("<h4>Result</h4>", unsafe_allow_html=True)
 
-        if st.session_state.result:
-            plant, disease, conf, remedy = st.session_state.result
-            st.markdown(f"<div class='result'><span class='label'>Plant:</span> {plant}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='result'><span class='label'>Detected Issue:</span> {disease}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='result'><span class='label'>Confidence:</span> {conf*100:.2f}%</div>", unsafe_allow_html=True)
+        if st.session_state.result_image:
+            plant, disease, conf, remedy = st.session_state.result_image
+            st.markdown(
+                f"<div class='result'><span class='label'>Plant:</span> {plant}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div class='result'><span class='label'>Detected Issue:</span> {disease}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div class='result'><span class='label'>Confidence:</span> {conf*100:.2f}%</div>",
+                unsafe_allow_html=True,
+            )
             st.markdown("---")
             st.markdown("<b>Recommended Treatment</b>")
             st.write(remedy)
         else:
-            st.info("Results will appear here.")
+            st.info("Results will appear here after analysis.")
 
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------ TEXT TAB ------------------
 with tab2:
     text_input = st.text_area("Describe symptoms observed on the plant")
 
-    colA, colB = st.columns([1,1])
+    colA, colB = st.columns([1, 1])
     with colA:
         if st.button("Analyze Symptoms"):
             if text_input.strip():
                 with st.spinner("Analyzing symptoms..."):
                     disease, conf, remedy = predict_text(text_input)
-                    st.session_state.result = (None, disease, conf, remedy)
+                    st.session_state.result_text = (disease, conf, remedy)
             else:
-                st.warning("Please enter symptoms.")
+                st.warning("Please enter symptoms before analysis.")
 
     with colB:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("<h4>Result</h4>", unsafe_allow_html=True)
-        if st.session_state.result:
-            _, disease, conf, remedy = st.session_state.result
-            st.markdown(f"<div class='result'><span class='label'>Detected Issue:</span> {disease}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='result'><span class='label'>Confidence:</span> {conf*100:.2f}%</div>", unsafe_allow_html=True)
+
+        if st.session_state.result_text:
+            disease, conf, remedy = st.session_state.result_text
+            st.markdown(
+                f"<div class='result'><span class='label'>Detected Issue:</span> {disease}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div class='result'><span class='label'>Confidence:</span> {conf*100:.2f}%</div>",
+                unsafe_allow_html=True,
+            )
             st.markdown("---")
             st.markdown("<b>Recommended Treatment</b>")
             st.write(remedy)
         else:
-            st.info("Results will appear here.")
-        st.markdown('</div>', unsafe_allow_html=True)
+            st.info("Results will appear here after analysis.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # FOOTER
