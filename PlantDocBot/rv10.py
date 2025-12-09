@@ -125,7 +125,6 @@ GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
 def ensure_image_model_path() -> str:
     """Download image analysis component from Drive if missing."""
     if not IMAGE_MODEL_FILE.exists() or IMAGE_MODEL_FILE.stat().st_size == 0:
-        st.write("📥 Preparing image analysis component…")
         gdown.download(
             id=GDRIVE_IMAGE_ID,
             output=str(IMAGE_MODEL_FILE),
@@ -139,7 +138,6 @@ def ensure_text_model_dir() -> str:
     """Download text analysis component from Drive if missing."""
     config_path = TEXT_MODEL_DIR / "config.json"
     if not config_path.exists():
-        st.write("📥 Preparing text analysis component…")
         TEXT_MODEL_DIR.mkdir(exist_ok=True)
         gdown.download_folder(
             id=GDRIVE_TEXT_FOLDER_ID,
@@ -154,7 +152,6 @@ def ensure_text_model_dir() -> str:
 def ensure_remedy_csv_path() -> str:
     """Download treatment knowledge base from Drive if missing."""
     if not REMEDY_CSV_PATH.exists() or REMEDY_CSV_PATH.stat().st_size == 0:
-        st.write("📥 Loading treatment knowledge base…")
         gdown.download(
             id=GDRIVE_CSV_ID,
             output=str(REMEDY_CSV_PATH),
