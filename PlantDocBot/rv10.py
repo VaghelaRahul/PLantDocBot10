@@ -1,7 +1,8 @@
-# rv10.py  — PlantDocBot (global deployable version)
+# rv10_cloud.py — PlantDocBot (Streamlit Cloud friendly)
 # - Downloads big models from Google Drive (once) into /models
-# - Uses TF BERT (TFAutoModelForSequenceClassification)
-# - Uses sentence-transformers to refine to professional disease names
+# - Uses TF text + image models
+# - NO sentence-transformers / torch (lighter & faster on cloud)
+# - UI hides internal model names / keys
 
 import os
 from pathlib import Path
@@ -12,10 +13,7 @@ import pandas as pd
 from PIL import Image
 import joblib
 import tensorflow as tf
-
 from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
-from sentence_transformers import SentenceTransformer, util
-import torch
 import gdown
 
 # ---------------------------------------------------------
@@ -44,7 +42,7 @@ TEXT_MODEL_DIR = MODELS_BASE / "Final_Text_Disease_Model"
 IMAGE_MODEL_FILE = MODELS_BASE / "plant_disease_model_fixed.keras"
 REMEDY_CSV_PATH = MODELS_BASE / "plant_disease_dataset_clean_lemmatized03.csv"
 
-# ---- Your Google Drive IDs (from the links you gave) ----
+# ---- Google Drive IDs ----
 GDRIVE_IMAGE_ID = "1oFVBpl-Q81kryI6h-TC94Wt7rcMd8AXn"
 GDRIVE_TEXT_FOLDER_ID = "1L_yTMpvW5xFSKUFHQN-_mz5t2K9fjxnG"
 GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
@@ -54,9 +52,9 @@ GDRIVE_CSV_ID = "1hVEoCo-EecTqFdVWTP7c-nqSGl1iV3e6"
 # ---------------------------------------------------------
 @st.cache_resource
 def ensure_image_model_path() -> str:
-    """Download plant_disease_model_fixed.keras from Drive if missing."""
+    """Download image model from Drive if missing."""
     if not IMAGE_MODEL_FILE.exists() or IMAGE_MODEL_FILE.stat().st_size == 0:
-        st.write("📥 Downloading image CNN model from Google Drive...")
+        st.write("📥 Preparing image analysis component…")
         gdown.download(
             id=GDRIVE_IMAGE_ID,
             output=str(IMAGE_MODEL_FILE),
@@ -67,10 +65,10 @@ def ensure_image_model_path() -> str:
 
 @st.cache_resource
 def ensure_text_model_dir() -> str:
-    """Download Final_Text_Disease_Model folder from Drive if missing."""
+    """Download text model folder from Drive if missing."""
     config_path = TEXT_MODEL_DIR / "config.json"
     if not config_path.exists():
-        st.write("📥 Downloading text BERT model from Google Drive...")
+        st.write("📥 Preparing text analysis component…")
         TEXT_MODEL_DIR.mkdir(exist_ok=True)
         gdown.download_folder(
             id=GDRIVE_TEXT_FOLDER_ID,
@@ -83,9 +81,9 @@ def ensure_text_model_dir() -> str:
 
 @st.cache_resource
 def ensure_remedy_csv_path() -> str:
-    """Download plant_disease_dataset_clean_lemmatized03.csv from Drive if missing."""
+    """Download treatment knowledge base from Drive if missing."""
     if not REMEDY_CSV_PATH.exists() or REMEDY_CSV_PATH.stat().st_size == 0:
-        st.write("📥 Downloading remedy CSV from Google Drive...")
+        st.write("📥 Loading treatment knowledge base…")
         gdown.download(
             id=GDRIVE_CSV_ID,
             output=str(REMEDY_CSV_PATH),
@@ -123,7 +121,6 @@ def normalize_disease(d: str) -> str:
 def load_nlp_model():
     text_model_path = ensure_text_model_dir()
     tokenizer = AutoTokenizer.from_pretrained(text_model_path)
-    # IMPORTANT: TF version, not PyTorch
     model = TFAutoModelForSequenceClassification.from_pretrained(
         text_model_path,
         from_pt=False,
@@ -239,172 +236,6 @@ def load_display_map():
     return {}
 
 # ---------------------------------------------------------
-# DISEASE-LEVEL REFINER USING SENTENCE-TRANSFORMERS
-# ---------------------------------------------------------
-@st.cache_resource
-def load_disease_refiner():
-    """
-    Build an index of diseases (fine-grained) using your CSV.
-    Each disease_key gets:
-      - display_name (pretty disease string from CSV)
-      - merged_label (coarse group)
-      - rep_text (representative symptom text)
-      - top_remedy (disease-specific remedy, if available)
-      - embedding (for semantic similarity)
-    """
-    csv_path = ensure_remedy_csv_path()
-    df = pd.read_csv(csv_path)
-
-    if "Disease" not in df.columns:
-        return None
-
-    # ensure merged_label exists, same logic as load_remedy_maps
-    if "merged_label" not in df.columns:
-        if DISEASE_TO_MERGED_CSV.exists():
-            mapdf = pd.read_csv(DISEASE_TO_MERGED_CSV)
-            disease_to_merged = dict(
-                zip(
-                    mapdf["Disease"].astype(str).str.lower(),
-                    mapdf["merged_label"].astype(str).str.lower(),
-                )
-            )
-            df["merged_label"] = (
-                df["Disease"].astype(str).str.lower().map(disease_to_merged)
-            )
-            df["merged_label"] = df["merged_label"].fillna(
-                df["Disease"].astype(str).str.lower()
-            )
-        else:
-            df["merged_label"] = df["Disease"].astype(str).str.lower()
-
-    df["merged_label"] = (
-        df["merged_label"]
-        .astype(str)
-        .str.strip()
-        .replace("", "other")
-        .fillna("other")
-        .str.lower()
-    )
-
-    df["Disease_raw"] = df["Disease"].astype(str)
-    df["disease_key"] = df["Disease_raw"].str.strip().str.lower()
-
-    # Build one representative record per disease_key
-    records = []
-    for disease_key, sub in df.groupby("disease_key"):
-        # Coarse group for this disease
-        if not sub["merged_label"].isna().all():
-            merged_group = sub["merged_label"].value_counts().index[0]
-        else:
-            merged_group = "other"
-
-        # Pretty name: most common Disease string
-        display_name = sub["Disease_raw"].value_counts().index[0]
-
-        # Representative symptom text
-        text_pieces = []
-        if "Symptoms" in sub.columns:
-            text_pieces = sub["Symptoms"].dropna().astype(str).unique().tolist()
-        elif "clean_text" in sub.columns:
-            text_pieces = sub["clean_text"].dropna().astype(str).unique().tolist()
-
-        if not text_pieces:
-            text_pieces = [display_name]
-
-        rep_text = " ".join(text_pieces[:3])
-
-        # Disease-specific top remedy (if exists)
-        if "Remedy" in sub.columns:
-            remedies = sub["Remedy"].dropna().astype(str).str.strip()
-            top_rem = remedies.value_counts().index[0] if len(remedies) else None
-        else:
-            top_rem = None
-
-        records.append(
-            {
-                "disease_key": disease_key,
-                "display_name": display_name,
-                "merged_label": merged_group,
-                "rep_text": rep_text,
-                "top_remedy": top_rem,
-            }
-        )
-
-    if not records:
-        return None
-
-    index_df = pd.DataFrame(records)
-
-    # SentenceTransformer model
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embs = model.encode(
-        index_df["rep_text"].tolist(),
-        convert_to_tensor=True,
-        show_progress_bar=False,
-    )
-
-    return {
-        "model": model,
-        "index_df": index_df,
-        "embs": embs,
-    }
-
-
-def refine_disease_with_embeddings(symptoms_text: str, coarse_merged: str, min_sim: float = 0.35):
-    """
-    Use sentence-transformer to refine from coarse merged_label to a specific Disease.
-    Returns (display_name, disease_key, disease_remedy, similarity) or (None, None, None, None).
-    """
-    refiner = load_disease_refiner()
-    if refiner is None:
-        return None, None, None, None
-
-    model = refiner["model"]
-    index_df = refiner["index_df"]
-    embs = refiner["embs"]
-
-    coarse_key = str(coarse_merged).strip().lower()
-    # restrict candidate diseases to same coarse group
-    candidate_indices = index_df.index[index_df["merged_label"] == coarse_key].tolist()
-
-    if not candidate_indices:
-        # try fallback by normalized group
-        norm_key = normalize_disease(coarse_key)
-        candidate_indices = index_df.index[
-            index_df["merged_label"].apply(normalize_disease) == norm_key
-        ].tolist()
-
-    if not candidate_indices:
-        return None, None, None, None
-
-    # encode the user text
-    query_emb = model.encode(
-        symptoms_text,
-        convert_to_tensor=True,
-        show_progress_bar=False,
-    )
-
-    # pick candidate embeddings
-    candidate_embs = embs[candidate_indices]
-
-    sims = util.cos_sim(query_emb, candidate_embs)[0]  # 1D tensor
-    best_pos = int(torch.argmax(sims).item())
-    best_sim = float(sims[best_pos])
-
-    if best_sim < min_sim:
-        return None, None, None, None
-
-    best_global_idx = candidate_indices[best_pos]
-    row = index_df.loc[best_global_idx]
-
-    return (
-        row["display_name"],
-        row["disease_key"],
-        row["top_remedy"],
-        best_sim,
-    )
-
-# ---------------------------------------------------------
 # LOAD ALL RESOURCES (calls cached functions)
 # ---------------------------------------------------------
 tokenizer, nlp_model, label_encoder = load_nlp_model()
@@ -412,7 +243,6 @@ cnn_model = load_image_model()
 img_idx_to_class = load_image_label_encoder()
 remedy_by_merged, remedy_by_norm = load_remedy_maps()
 display_name_by_merged = load_display_map()
-# disease_refiner is loaded lazily via load_disease_refiner()
 
 # ---------------------------------------------------------
 # SMALL HELPERS
@@ -427,10 +257,9 @@ def split_plant_and_disease(class_name):
     return plant, disease
 
 # ---------------------------------------------------------
-# PREDICT TEXT (WITH REFINER)
+# PREDICT TEXT  (NO sentence-transformer refinement)
 # ---------------------------------------------------------
 def predict_text(symptoms: str):
-    # 1) BERT coarse classification
     enc = tokenizer(
         symptoms,
         truncation=True,
@@ -443,53 +272,28 @@ def predict_text(symptoms: str):
     merged_raw = label_encoder.inverse_transform([pred])[0]
     merged_key = str(merged_raw).lower().strip()
 
-    # base display (if refinement fails)
-    base_display = display_name_by_merged.get(
+    # pretty display name (if mapping exists)
+    display = display_name_by_merged.get(
         merged_key, merged_key.replace("_", " ").title()
     )
 
-    # 2) Refine to specific Disease
-    refined_name, disease_key, disease_remedy, sim = refine_disease_with_embeddings(
-        symptoms, merged_key
+    remedy = (
+        remedy_by_merged.get(merged_key)
+        or remedy_by_norm.get(normalize_disease(merged_key), "No remedy available.")
     )
-
-    if refined_name is not None:
-        final_display = refined_name
-        final_label_key = disease_key  # more specific
-        if disease_remedy:
-            remedy = disease_remedy
-        else:
-            remedy = (
-                remedy_by_merged.get(merged_key)
-                or remedy_by_norm.get(normalize_disease(merged_key), "No remedy available.")
-            )
-        refined_from = merged_key
-        similarity = sim
-    else:
-        # fallback: use coarse label only
-        final_display = base_display
-        final_label_key = merged_key
-        remedy = (
-            remedy_by_merged.get(merged_key)
-            or remedy_by_norm.get(normalize_disease(merged_key), "No remedy available.")
-        )
-        refined_from = None
-        similarity = None
 
     confidence = float(tf.nn.softmax(outputs.logits)[0][pred])
 
     return {
-        "display_name": final_display,
-        "final_key": final_label_key,
+        "display_name": display,
+        "final_key": merged_key,
         "coarse_label": merged_key,
-        "refined_from": refined_from,
         "confidence": confidence,
-        "similarity": similarity,
         "remedy": remedy,
     }
 
 # ---------------------------------------------------------
-# PREDICT IMAGE (OPTIONALLY USE REFINER)
+# PREDICT IMAGE (simple mapping)
 # ---------------------------------------------------------
 def predict_image(image_file):
     img = Image.open(image_file).convert("RGB").resize((224, 224))
@@ -503,47 +307,15 @@ def predict_image(image_file):
     class_name = img_idx_to_class.get(idx, str(idx))
     plant, disease_full = split_plant_and_disease(class_name)
 
-    # Try to map to exact Disease in CSV using refiner index
-    refiner = load_disease_refiner()
-    if refiner is not None:
-        index_df = refiner["index_df"]
-        disease_key = disease_full.lower().strip()
-        mask = index_df["disease_key"] == disease_key
-        if mask.any():
-            row = index_df[mask].iloc[0]
-            display_name = row["display_name"]
-            disease_remedy = row["top_remedy"]
-            merged_label = row["merged_label"]
-            remedy = (
-                disease_remedy
-                or remedy_by_merged.get(merged_label)
-                or remedy_by_norm.get(normalize_disease(merged_label), "No remedy available.")
-            )
-        else:
-            merged_candidate = disease_full.lower().strip().replace(" ", "_")
-            remedy = (
-                remedy_by_merged.get(merged_candidate)
-                or remedy_by_norm.get(normalize_disease(merged_candidate), "No remedy available.")
-            )
-            display_name = disease_full
-            disease_key = merged_candidate
-            merged_label = normalize_disease(merged_candidate)
-    else:
-        merged_candidate = disease_full.lower().strip().replace(" ", "_")
-        remedy = (
-            remedy_by_merged.get(merged_candidate)
-            or remedy_by_norm.get(normalize_disease(merged_candidate), "No remedy available.")
-        )
-        display_name = disease_full
-        disease_key = merged_candidate
-        merged_label = normalize_disease(merged_candidate)
+    merged_candidate = disease_full.lower().strip().replace(" ", "_")
+    remedy = (
+        remedy_by_merged.get(merged_candidate)
+        or remedy_by_norm.get(normalize_disease(merged_candidate), "No remedy available.")
+    )
 
     return {
         "plant": plant,
-        "disease_display": display_name,
-        "disease_full": disease_full,
-        "internal_key": disease_key,
-        "merged_label": merged_label,
+        "disease_display": disease_full,
         "confidence": confidence,
         "remedy": remedy,
     }
@@ -555,11 +327,10 @@ st.header("📸 Image-based Prediction")
 uploaded_img = st.file_uploader("Upload leaf image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_img:
-    res_img = predict_image(uploaded_img)
+    with st.spinner("Analyzing leaf image…"):
+        res_img = predict_image(uploaded_img)
 
-    st.subheader(f"🌿 Detected Disease: **{res_img['plant']} – {res_img['disease_display']}**")
-    st.write(f"Model class: `{res_img['disease_full']}`")
-    st.write(f"Internal key: `{res_img['internal_key']}`  | merged group: `{res_img['merged_label']}`")
+    st.subheader(f"🌿 Detected condition: **{res_img['plant']} – {res_img['disease_display']}**")
     st.write(f"Confidence: **{res_img['confidence']*100:.2f}%**")
     st.subheader("🧪 Recommended Treatment:")
     st.write(res_img["remedy"])
@@ -569,17 +340,11 @@ text_input = st.text_area("Describe the symptoms here...")
 
 if st.button("Analyze Text"):
     if text_input.strip():
-        res_txt = predict_text(text_input)
+        with st.spinner("Analyzing description…"):
+            res_txt = predict_text(text_input)
 
-        st.subheader(f"🌿 Detected Disease: **{res_txt['display_name']}**")
-        st.write(f"Coarse group predicted by BERT: `{res_txt['coarse_label']}`")
-        if res_txt["refined_from"]:
-            st.write(
-                f"Refined from coarse label `{res_txt['refined_from']}` "
-                f"using symptom similarity (score ≈ {res_txt['similarity']:.2f})."
-            )
-        st.write(f"Internal key: `{res_txt['final_key']}`")
-        st.write(f"Confidence (model softmax): **{res_txt['confidence']*100:.2f}%**")
+        st.subheader(f"🌿 Detected condition: **{res_txt['display_name']}**")
+        st.write(f"Confidence: **{res_txt['confidence']*100:.2f}%**")
 
         st.subheader("🧪 Recommended Treatment:")
         st.write(res_txt["remedy"])
